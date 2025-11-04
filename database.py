@@ -42,6 +42,8 @@ class Submissao(Model):
     desafio = fields.ForeignKeyField('models.Desafio', related_name='submissoes')
     usuario = fields.ForeignKeyField('models.Usuario', related_name='submissoes')
     
+    mensagem_votacao_id = fields.BigIntField(null=True, unique=True)
+
     link_codigo = fields.TextField() 
     data_submissao = fields.DatetimeField(auto_now_add=True)
     
@@ -55,6 +57,23 @@ class Submissao(Model):
 
     def __str__(self):
         return f"Submissão {self.id} (Desafio: {self.desafio_id}, Usuário: {self.usuario_id})"
+    
+class Voto(Model):
+    id = fields.IntField(pk=True)
+    
+    submissao = fields.ForeignKeyField('models.Submissao', related_name='votos')
+    usuario = fields.ForeignKeyField('models.Usuario', related_name='votos')
+    
+    tipo_voto = fields.CharField(max_length=20)
+    
+
+    mensagem_id = fields.BigIntField(null=True) 
+
+    class Meta:
+        unique_together = ("submissao", "usuario")
+
+    def __str__(self):
+        return f"Voto de {self.usuario_id} em {self.submissao_id}"
     
 DB_CONFIG = {
     'connections': {
