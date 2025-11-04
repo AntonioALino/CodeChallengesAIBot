@@ -6,7 +6,7 @@ from discord.app_commands import Choice
 from dotenv import load_dotenv
 
 
-from database import init_db, close_db, Desafio 
+from database import Submissao, Usuario, init_db, close_db, Desafio 
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -34,16 +34,6 @@ async def on_ready():
 @client.event
 async def on_shutdown():
     await close_db()
-
-
-@tree.command(
-    name="ping",
-    description="Responde com Pong!",
-    guild=TEST_GUILD
-)
-async def ping_command(interaction: discord.Interaction):
-    await interaction.response.send_message("Pong!")
-
 
 @tree.command(
     name="criar-desafio",
@@ -122,5 +112,76 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             f"Ocorreu um erro: {error}",
             ephemeral=True
         )
+
+@tree.command(
+    name="submeter",
+    description="Envia sua solução para um desafio aberto.",
+    guild=TEST_GUILD
+)
+
+@app_commands.describe(
+    id_desafio="O ID numérico do desafio (veja no #canal-desafios)",
+    link_codigo="O link para seu código (GitHub Gist, Pastebin, etc.)"
+)
+async def submeter(
+    interaction: discord.Interaction,
+    id_desafio: int,
+    link_codigo: str
+):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        desafio = await Desafio.get(id=id_desafio)
+
+    except Exception: 
+        await interaction.followup.send("❌ **Erro:** Desafio com este ID não encontrado.")
+        return
+
+    if desafio.status != Desafio.Status.ABERTO:
+        await interaction.followup.send(f"❌ **Erro:** Este desafio não está mais aceitando submissões (Status: {desafio.status}).")
+        return
+
+    agora = datetime.datetime.now(datetime.timezone.utc)
+    if agora > desafio.data_fim_submissao:
+        await interaction.followup.send("❌ **Erro:** O prazo para este desafio já encerrou.")
+        desafio.status = Desafio.Status.VOTACAO
+        await desafio.save()
+        return
+
+   
+    if not link_codigo.startswith("http://") and not link_codigo.startswith("https://"):
+        await interaction.followup.send("❌ **Erro:** O link do código parece inválido. Deve começar com `http://` ou `https://`.")
+        return
+
+    try:
+        usuario_db, criado = await Usuario.get_or_create(
+            discord_id=interaction.user.id,
+            defaults={"username": interaction.user.name}
+        )
+        
+        
+        submissao, criada = await Submissao.update_or_create(
+            desafio=desafio,
+            usuario=usuario_db,
+            defaults={"link_codigo": link_codigo, "data_submissao": agora}
+        )
+
+        if criada:
+            await interaction.followup.send(
+                f"✅ **Submissão recebida!**\n"
+                f"Sua solução para o desafio '{desafio.titulo}' foi registrada.\n"
+                f"Boa sorte!"
+            )
+        else:
+            await interaction.followup.send(
+                f"🔄 **Submissão atualizada!**\n"
+                f"Seu novo link para o desafio '{desafio.titulo}' foi salvo."
+            )
+
+    except Exception as e:
+        print(f"Erro ao salvar submissão: {e}")
+        await interaction.followup.send(f"❌ Ocorreu um erro inesperado ao salvar sua submissão. Tente novamente. {e}")
+
+    
 
 client.run(TOKEN)

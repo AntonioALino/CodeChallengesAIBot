@@ -6,7 +6,7 @@ from tortoise.models import Model
 
 load_dotenv()
 
-class User(Model):
+class Usuario(Model):
     discord_id = fields.BigIntField(pk=True)
     username = fields.CharField(max_length=100)
     pontos_total = fields.IntField(default=0)
@@ -35,6 +35,26 @@ class Desafio(Model):
 
     def __str__(self):
         return self.titulo
+    
+class Submissao(Model):
+    id = fields.IntField(pk=True)
+    
+    desafio = fields.ForeignKeyField('models.Desafio', related_name='submissoes')
+    usuario = fields.ForeignKeyField('models.Usuario', related_name='submissoes')
+    
+    link_codigo = fields.TextField() 
+    data_submissao = fields.DatetimeField(auto_now_add=True)
+    
+    pontos_comunidade = fields.IntField(default=0)
+    pontos_jurados = fields.IntField(default=0)
+    pontos_ia = fields.IntField(default=0)
+    pontos_total = fields.IntField(default=0)
+
+    class Meta:
+        unique_together = ("desafio", "usuario")
+
+    def __str__(self):
+        return f"Submissão {self.id} (Desafio: {self.desafio_id}, Usuário: {self.usuario_id})"
     
 DB_CONFIG = {
     'connections': {
