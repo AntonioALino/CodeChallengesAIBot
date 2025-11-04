@@ -76,6 +76,9 @@ Siga estes passos para rodar sua própria instância do bot.
     ```env
     # Token do Bot (do Portal de Dev do Discord)
     DISCORD_TOKEN=SEU_TOKEN_AQUI
+    DISCORD_SERVER_ID=SEU_SERVER_ID
+    DISCORD_CHANNEL_ID=SEU_CHANNEL_ID
+    DISCORD_VOTE_CHANNEL_ID=SEU_VOTE_CHANNEL_ID
     
     # Credenciais do seu banco de dados PostgreSQL
     DB_HOST=seu_host_aqui
