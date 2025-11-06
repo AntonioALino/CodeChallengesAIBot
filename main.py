@@ -247,7 +247,7 @@ async def iniciar_votacao(interaction: discord.Interaction, id_desafio: int):
         embed.set_footer(text=f"ID da Submissão: {submissao.id}")
 
         msg = await canal_votacao.send(embed=embed)
-        await msg.add_reaction("🗳️")
+        await msg.add_reaction("🌟")
 
         submissao.mensagem_votacao_id = msg.id
         await submissao.save()
@@ -257,63 +257,69 @@ async def iniciar_votacao(interaction: discord.Interaction, id_desafio: int):
 ## EVENTOS DE REAÇÕES PARA VOTAÇÃO ##
 
 @client.event
-async def _on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    if payload.user_id == client.user.id:
-        return  
-
-    if str(payload.emoji) != "🗳️":
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if str(payload.emoji) != "🌟" or payload.user_id == client.user.id:
         return
-    
+
     if payload.channel_id != int(os.getenv("DISCORD_VOTE_CHANNEL_ID")): 
         return
 
     try:
         submissao = await Submissao.get(mensagem_votacao_id=payload.message_id)
+        
         usuario_votante, _ = await Usuario.get_or_create(
             discord_id=payload.user_id,
-            defaults={"username": f"User#{payload.user_id}"}
+            defaults={"username": payload.member.name if payload.member else "Usuário Desconhecido"}
         )
 
-        await Voto.create(
+        voto, foi_criado = await Voto.get_or_create(
             submissao=submissao,
             usuario=usuario_votante,
             tipo_voto="comunidade",
-            mensagem_id=payload.message_id 
+            defaults={"mensagem_id": payload.message_id} 
         )
 
-        submissao.pontos_comunidade += PONTOS_POR_VOTO_COMUNIDADE
-        submissao.pontos_total += PONTOS_POR_VOTO_COMUNIDADE
-        print(f"Voto computado para submissão {submissao.id} pelo usuário {usuario_votante.username}")
-
+        if foi_criado:
+            submissao.pontos_comunidade += PONTOS_POR_VOTO_COMUNIDADE
+            submissao.pontos_total += PONTOS_POR_VOTO_COMUNIDADE
+            await submissao.save()
+        else:
+            return
+        
     except Exception as e:
-        print(f"Erro ao adicionar voto (provavelmente duplicado): {e}")
+        print(f"[ERRO] Erro em on_raw_reaction_add: {e}")
 
 @client.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
-    if str(payload.emoji) != "🗳️" or payload.user_id == client.user.id:
+    if str(payload.emoji) != "🌟" or payload.user_id == client.user.id:
         return
 
-    if payload.channel_id != int(os.getenv("DISCORD_VOTE_CHANNEL_ID")): 
+    if payload.channel_id != int(os.getenv("DISCORD_VOTE_CHANNEL_ID")):
         return
-        
+
     try:
         voto_removido = await Voto.get(
-            mensagem_id=payload.message_id,
             usuario_id=payload.user_id,
+            mensagem_id=payload.message_id,
             tipo_voto="comunidade"
-        ).prefetch_related('submissao') 
+        ).prefetch_related('submissao')
 
         submissao = voto_removido.submissao
         submissao.pontos_comunidade -= PONTOS_POR_VOTO_COMUNIDADE
         submissao.pontos_total -= PONTOS_POR_VOTO_COMUNIDADE
-        await submissao.save()
         
+        if submissao.pontos_comunidade < 0:
+            submissao.pontos_comunidade = 0
+        if submissao.pontos_total < 0 and submissao.pontos_jurados == 0 and submissao.pontos_ia == 0:
+             submissao.pontos_total = 0 
+            
+        await submissao.save()
         await voto_removido.delete()
         
-        print(f"Voto removido para submissão {submissao.id} pelo usuário {payload.user_id}")
+        print(f"[SUCESSO] Voto removido para submissão {submissao.id}. Novos pontos: {submissao.pontos_total}")
 
     except Exception as e:
-        print(f"Erro ao remover voto (provavelmente não existia): {e}")
+        print(f"[AVISO] Erro ao remover voto (provavelmente não existia ou já foi removido): {e}")
 
 ## INICIAR VOTAÇÃO POR JURADO ##
 
@@ -491,7 +497,7 @@ async def ranking(interaction: discord.Interaction):
         if usuario.pontos_total == 0: continue 
 
         prefixo = medalhas[i] if i < len(medalhas) else f"**{i+1}.**"
-        ranking_descricao += f"{prefixo} {usuario.username} - **{usuario.pontos_total} pontos**\n"
+        ranking_descricao += f"{prefixo} {usuario.username} **{usuario.pontos_total} pontos**\n"
 
     if not ranking_descricao:
          ranking_descricao = "Ninguém pontuou ainda."
