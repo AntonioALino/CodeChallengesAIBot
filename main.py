@@ -6,6 +6,7 @@ from discord.app_commands import Choice
 from dotenv import load_dotenv
 
 
+from ai_integration import fetch_code_from_url, generate_ai_challenge, get_ai_score
 from database import Submissao, Usuario, Voto, init_db, close_db, Desafio 
 
 load_dotenv()
@@ -404,7 +405,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 @app_commands.describe(id_desafio="O ID do desafio para fechar.")
 @app_commands.checks.has_permissions(administrator=True)
 async def encerrar_votacao(interaction: discord.Interaction, id_desafio: int):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=True) 
 
     try:
         desafio = await Desafio.get(id=id_desafio)
@@ -419,38 +420,62 @@ async def encerrar_votacao(interaction: discord.Interaction, id_desafio: int):
     desafio.status = Desafio.Status.FECHADO
     await desafio.save()
 
-    submissoes_vencedoras = await Submissao.filter(desafio=desafio).order_by(
-        '-pontos_total'
-    ).prefetch_related('usuario') 
+    submissoes = await Submissao.filter(desafio=desafio).prefetch_related('usuario')
 
-    if not submissoes_vencedoras:
+    if not submissoes:
         await interaction.followup.send(f"✅ Desafio {desafio.titulo} fechado. Não houveram submissões.")
         return
 
+
+    await interaction.edit_original_response(content=f"Votação encerrada. Iniciando análise da IA para {len(submissoes)} submissões...")
     
+    justificativas_ia = {} 
+    for sub in submissoes:
+        await interaction.edit_original_response(content=f"Analisando submissão {sub.id} de {sub.usuario.username}...")
+        
+        code_text = await fetch_code_from_url(sub.link_codigo)
+        
+        if not code_text:
+            print(f"Não foi possível buscar o código da submissão {sub.id} (Link: {sub.link_codigo})")
+            justificativas_ia[sub.id] = "Erro ao buscar o código do link."
+            continue 
+
+        nota, justificativa = await get_ai_score(code_text, desafio.descricao)
+        
+        sub.pontos_ia = nota
+        sub.pontos_total += nota
+        await sub.save()
+        
+        justificativas_ia[sub.id] = justificativa 
+        
+    await interaction.edit_original_response(content="Análise da IA completa! Calculando rankings...")
+    # --- FIM DA LÓGICA DE IA ---
+
+
+    submissoes_vencedoras = sorted(submissoes, key=lambda s: s.pontos_total, reverse=True)
+
     for sub in submissoes_vencedoras:
         usuario = sub.usuario
         usuario.pontos_total += sub.pontos_total
         await usuario.save()
 
-    
     canal_anuncios = client.get_channel(int(os.getenv("DISCORD_CHANNEL_ID"))) 
 
     embed = discord.Embed(
         title=f"🏆 Votação Encerrada: {desafio.titulo} 🏆",
-        description=f"A votação para o Nível '{desafio.nivel.value}' está completa! Obrigado a todos que participaram.",
+        description=f"A votação para o Nível '{desafio.nivel.value}' está completa!",
         color=discord.Color.green()
     )
 
-    
     ranking_descricao = ""
     medalhas = ["🥇", "🥈", "🥉"]
 
-    for i, sub in enumerate(submissoes_vencedoras[:3]):
+    for i, sub in enumerate(submissoes_vencedoras[:3]): # Top 3
         medalha = medalhas[i] if i < len(medalhas) else f"**{i+1}.**"
         ranking_descricao += (
             f"{medalha} {sub.usuario.username} com **{sub.pontos_total} pontos**\n"
-            f"(Comunidade: {sub.pontos_comunidade}, Jurados: {sub.pontos_jurados}, IA: {sub.pontos_ia})\n\n"
+            f"*(Comunidade: {sub.pontos_comunidade}, Jurados: {sub.pontos_jurados}, IA: {sub.pontos_ia})*\n"
+            f"**Feedback da IA:** *{justificativas_ia.get(sub.id, 'N/A')}*\n\n"
         )
     
     if not ranking_descricao:
@@ -464,10 +489,9 @@ async def encerrar_votacao(interaction: discord.Interaction, id_desafio: int):
         await interaction.followup.send(f"✅ Desafio fechado e vencedores anunciados em {canal_anuncios.mention}!")
     else:
         await interaction.followup.send("✅ Desafio fechado. (Não consegui anunciar no canal, verifique o ID).")
-
 ##
 
-##
+## FEAT DE RANKING GERAL ##
 
 @tree.command(
     name="ranking",
@@ -504,6 +528,71 @@ async def ranking(interaction: discord.Interaction):
 
     embed.add_field(name="Top 10 Desenvolvedores", value=ranking_descricao)
     await interaction.followup.send(embed=embed)
+
+##
+
+## FEAT DE GERAR DESAFIOS COM IA ##
+
+@tree.command(
+    name="gerar-desafio-ia",
+    description="Gera um novo desafio de programação usando IA.",
+    guild=TEST_GUILD
+)
+@app_commands.describe(
+    tema="O tema central do desafio (ex: 'API REST', 'Algoritmo de Ordenação')",
+    nivel="O nível de dificuldade do desafio",
+    dias_para_concluir="Quantos dias os membros terão para submeter (ex: 7)"
+)
+@app_commands.choices(nivel=[
+    Choice(name='Júnior', value='junior'),
+    Choice(name='Pleno', value='pleno'),
+    Choice(name='Sênior', value='senior'),
+])
+@app_commands.checks.has_permissions(administrator=True)
+async def gerar_desafio_ia(
+    interaction: discord.Interaction,
+    tema: str,
+    nivel: Choice[str],
+    dias_para_concluir: int
+):
+    await interaction.response.defer(ephemeral=True) 
+    
+    titulo, descricao = await generate_ai_challenge(nivel.value, tema)
+    
+    if not titulo or not descricao:
+        await interaction.followup.send(f"❌ Erro ao gerar desafio com IA: {descricao}")
+        return
+
+    
+    data_fim = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=dias_para_concluir)
+
+    try:
+        novo_desafio = await Desafio.create(
+            titulo=titulo,
+            descricao=descricao,
+            nivel=nivel.value,
+            data_fim_submissao=data_fim
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erro ao salvar o desafio da IA no banco de dados: {e}")
+        return
+
+    # 4. Anunciar o desafio
+    canal_desafios = client.get_channel(int(os.getenv("DISCORD_CHANNEL_ID"))) 
+
+    if canal_desafios:
+        embed = discord.Embed(
+            title=f"🚀 Novo Desafio (IA): {titulo} (Nível: {nivel.name})",
+            description=descricao,
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Prazo de Submissão", value=f"Até <t:{int(data_fim.timestamp())}:F>")
+        embed.set_footer(text=f"ID do Desafio: {novo_desafio.id} | Use /submeter para participar!")
+
+        await canal_desafios.send(content="@everyone Novo desafio gerado por IA!", embed=embed)
+        await interaction.followup.send(f"✅ Desafio da IA (ID: {novo_desafio.id}) criado com sucesso!")
+    else:
+        await interaction.followup.send(f"⚠️ Desafio criado no DB (ID: {novo_desafio.id}), mas não encontrei o canal de anúncios.")
 
 ## FIM DOS COMANDOS ##
 
