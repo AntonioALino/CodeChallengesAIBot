@@ -18,6 +18,28 @@ PONTOS_POR_VOTO_JURADO = 30
 
 NOME_CARGO_JURADO = "Jurado"
 
+CHALLENGE_CONFIG = {
+        "iniciante": {
+            "role_id": int(os.getenv("ROLE_ID_INICIANTE")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_INICIANTE"))
+        },
+        "junior": {
+            "role_id": int(os.getenv("ROLE_ID_JUNIOR")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_JUNIOR"))
+        },
+        "pleno": {
+            "role_id": int(os.getenv("ROLE_ID_PLENO")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_PLENO")),
+        },
+        "senior": {
+            "role_id": int(os.getenv("ROLE_ID_SENIOR")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_SENIOR")),
+        }
+    }
+
+ultimo_dia_checado = None
+ultima_semana_checada = None
+ultimo_mes_checado = None
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -470,10 +492,12 @@ async def encerrar_votacao(interaction: discord.Interaction, id_desafio: int):
         await interaction.followup.send(f"✅ Desafio {desafio.titulo} fechado. Não houveram submissões.")
         return
 
-
     await interaction.edit_original_response(content=f"Votação encerrada. Iniciando análise da IA para {len(submissoes)} submissões...")
     
+    ## IA ##
+
     justificativas_ia = {} 
+
     for sub in submissoes:
         await interaction.edit_original_response(content=f"Analisando submissão {sub.id} de {sub.usuario.username}...")
         
@@ -493,47 +517,68 @@ async def encerrar_votacao(interaction: discord.Interaction, id_desafio: int):
         justificativas_ia[sub.id] = justificativa 
         
     await interaction.edit_original_response(content="Análise da IA completa! Calculando rankings...")
-    
 
+    ## IA ##
 
     submissoes_vencedoras = sorted(submissoes, key=lambda s: s.pontos_total, reverse=True)
 
     for sub in submissoes_vencedoras:
         usuario = sub.usuario
-        usuario.pontos_total += sub.pontos_total
+        
+        pontos_ganhos = sub.pontos_total 
+        
+        usuario.pontos_total += pontos_ganhos
+        usuario.pontos_mes += pontos_ganhos
+        usuario.pontos_semana += pontos_ganhos
+        
         await usuario.save()
 
-    canal_anuncios = client.get_channel(int(os.getenv("DISCORD_CHANNEL_ID"))) 
+    
+    challenge_level = desafio.nivel.value 
+    config = CHALLENGE_CONFIG.get(challenge_level) 
+
+    canal_anuncios = int(os.getenv("DISCORD_ANNOUNCEMENT_CHANNEL_ID"))
+    
+    if config:
+        canal_anuncios = client.get_channel(config["channel_id"])
+    
+    if not canal_anuncios:
+        await interaction.followup.send(f"✅ Desafio fechado. (AVISO: Não encontrei o canal de anúncio para o nível '{challenge_level}' no CHALLENGE_CONFIG).")
+        return 
 
     embed = discord.Embed(
         title=f"🏆 Votação Encerrada: {desafio.titulo} 🏆",
-        description=f"A votação para o Nível '{desafio.nivel.value}' está completa!",
+        description=f"A votação para o Nível '{desafio.nivel.value}' está completa! Obrigado a todos que participaram.",
         color=discord.Color.green()
     )
 
-    ranking_descricao = ""
-    medalhas = ["🥇", "🥈", "🥉"]
+    medalhas = ["🥇 1º Lugar", "🥈 2º Lugar", "🥉 3º Lugar"]
 
-    for i, sub in enumerate(submissoes_vencedoras[:3]): # Top 3
-        medalha = medalhas[i] if i < len(medalhas) else f"**{i+1}.**"
-        ranking_descricao += (
-            f"{medalha} {sub.usuario.username} com **{sub.pontos_total} pontos**\n"
-            f"*(Comunidade: {sub.pontos_comunidade}, Jurados: {sub.pontos_jurados}, IA: {sub.pontos_ia})*\n"
-            f"**Feedback da IA:** *{justificativas_ia.get(sub.id, 'N/A')}*\n\n"
-        )
-    
-    if not ranking_descricao:
-        ranking_descricao = "Nenhuma submissão recebeu pontos."
+    if not submissoes_vencedoras:
+        embed.add_field(name="Resultados Finais", value="Nenhuma submissão recebeu pontos.")
+    else:
+        for i, sub in enumerate(submissoes_vencedoras[:3]):
+            
+            field_name = medalhas[i] if i < len(medalhas) else f"**{i+1}º Lugar**"
+            
+            feedback_ia = justificativas_ia.get(sub.id, 'N/A')
+            if len(feedback_ia) > 500:
+                feedback_ia = feedback_ia[:500] + "..."
 
-    embed.add_field(name="Resultados Finais", value=ranking_descricao, inline=False)
+            field_value = (
+                f"**Participante:** {sub.usuario.username}\n"
+                f"**Pontos Totais:** **{sub.pontos_total}**\n"
+                f"*(Comunidade: {sub.pontos_comunidade}, Jurados: {sub.pontos_jurados}, IA: {sub.pontos_ia})*\n"
+                f"**Feedback da IA:** *{feedback_ia}*\n"
+            )
+            
+            embed.add_field(name=field_name, value=field_value, inline=False)
+
     embed.set_footer(text="Parabéns aos vencedores! 🎉")
 
-    if canal_anuncios:
-        await canal_anuncios.send(content="@everyone Confira os resultados!", embed=embed)
-        await interaction.followup.send(f"✅ Desafio fechado e vencedores anunciados em {canal_anuncios.mention}!")
-    else:
-        await interaction.followup.send("✅ Desafio fechado. (Não consegui anunciar no canal, verifique o ID).")
-##
+    role_mention = f"<@&{config['role_id']}>"
+    await canal_anuncios.send(content=f"{role_mention} Confira os resultados!", embed=embed)
+    await interaction.followup.send(f"✅ Desafio fechado e vencedores anunciados em {canal_anuncios.mention}!")
 
 ## FEAT DE RANKING GERAL ##
 

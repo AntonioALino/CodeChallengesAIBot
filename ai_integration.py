@@ -49,19 +49,41 @@ async def _call_ollama(model_name: str, prompt: str, expect_json: bool = True):
 async def generate_ai_challenge(nivel : str, tema: str):
 
     
+    instrucao_nivel = ""
+    
+    if nivel == "iniciante":
+        instrucao_nivel = """
+        **Restrição Obrigatória:** O desafio DEVE ser focado APENAS em lógica de programação pura, 
+        estrutura de dados básica (arrays, listas, dicionários/mapas) ou algoritmos simples. 
+        NÃO inclua APIs, bancos de dados, ou frameworks.
+        Exemplos de temas bons: "soma de sub-arrays", "verificador de palíndromos", "contagem de frequência de caracteres".
+        """
+    else:
+        instrucao_nivel = f"""
+        **Restrição Obrigatória:** O desafio DEVE envolver a criação ou consumo de uma API 
+        (ex: REST, GraphQL) ou um sistema back-end relacionado. A dificuldade deve ser 
+        apropriada para o nível '{nivel}'.
+        - **Júnior:** Uma API simples com 2-3 endpoints (CRUD básico).
+        - **Pleno:** Uma API com autenticação, filtros mais complexos ou integração com outro serviço.
+        - **Sênior:** Um desafio de arquitetura de microsserviços, otimização de performance da API ou design de sistema.
+        """
+
     prompt = f"""
     Você é um Coordenador de Desafios de Programação.
     Gere um desafio para o nível '{nivel}' com o tema '{tema}'.
+
+    {instrucao_nivel}
     
     Sua resposta DEVE ser um objeto JSON, e nada mais.
     O JSON deve ter duas chaves: "titulo" e "descricao".
     
     - 'titulo': Um título criativo e curto (máx 50 caracteres).
-    - 'descricao': Uma descrição clara do desafio. Use quebras de linha (\\n) para formatar a descrição.
+    - 'descricao': Uma descrição clara do desafio. Use quebras de linha (\\n) para formatar 
+      a descrição (ex: "## Objetivo\\n...", "## Requisitos\\n...").
     """
 
     json_str, error = await _call_ollama(OLLAMA_MODEL_CHALLENGE, prompt, expect_json=True)
-
+    
     if error:
         return None, error
         
