@@ -1,9 +1,11 @@
 import discord
 import os
 import datetime
+from discord.ext import tasks
 from discord import app_commands
 from discord.app_commands import Choice
 from dotenv import load_dotenv
+from tortoise.functions import Sum
 
 
 from ai_integration import fetch_code_from_url, generate_ai_challenge, get_ai_score
@@ -56,6 +58,7 @@ async def on_shutdown():
     dias_para_concluir="Quantos dias os membros terão para submeter (ex: 7)"
 )
 @app_commands.choices(nivel=[
+    Choice(name='Iniciante', value='iniciante'),
     Choice(name='Júnior', value='junior'),
     Choice(name='Pleno', value='pleno'),
     Choice(name='Sênior', value='senior'),
@@ -87,26 +90,58 @@ async def criar_desafio(
         await interaction.followup.send(f"❌ Erro ao criar o desafio no banco de dados: {e}")
         return
 
-    canal_desafios = client.get_channel(int(os.getenv("DISCORD_CHANNEL_ID")))
+    CHALLENGE_CONFIG = {
+        "iniciante": {
+            "role_id": int(os.getenv("ROLE_ID_INICIANTE")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_INICIANTE"))
+        },
+        "junior": {
+            "role_id": int(os.getenv("ROLE_ID_JUNIOR")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_JUNIOR"))
+        },
+        "pleno": {
+            "role_id": int(os.getenv("ROLE_ID_PLENO")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_PLENO")),
+        },
+        "senior": {
+            "role_id": int(os.getenv("ROLE_ID_SENIOR")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_SENIOR")),
+        }
+    }
 
-    if canal_desafios:
-        embed = discord.Embed(
-            title=f"🚀 Novo Desafio: {titulo} (Nível: {nivel.name})",
-            description=descricao_formatada,
-            color=discord.Color.blue()
-        )
-        embed.add_field(
-            name="Prazo de Submissão",
-            value=f"Até <t:{int(data_fim.timestamp())}:F>"
-        )
-        embed.set_footer(text=f"ID do Desafio: {novo_desafio.id} | Use /submeter para participar!")
+    nivel_key = nivel.value 
+    config = CHALLENGE_CONFIG.get(nivel_key)
 
-        await canal_desafios.send(content="@everyone Novo desafio lançado!", embed=embed)
+    if not config:
+        await interaction.followup.send(f"⚠️ Desafio criado no DB (ID: {novo_desafio.id}), mas NENHUM canal/role foi configurado no CHALLENGE_CONFIG para o nível '{nivel_key}'.")
+        return
+
+    try:
+        canal_desafio = client.get_channel(config["channel_id"])
+        role_mention = f"<@&{config['role_id']}>"
         
-        await interaction.followup.send(f"✅ Desafio '{titulo}' (ID: {novo_desafio.id}) criado com sucesso e anunciado em {canal_desafios.mention}!")
-    
-    else:
-        await interaction.followup.send(f"⚠️ Desafio criado no DB (ID: {novo_desafio.id}), mas não encontrei o canal de anúncios. Verifique o ID.")
+        if canal_desafio:
+            embed = discord.Embed(
+                title=f"🚀 Novo Desafio: {titulo} (Nível: {nivel.name})",
+                description=descricao_formatada,
+                color=discord.Color.blue()
+            )
+            embed.add_field(
+                name="Prazo de Submissão",
+                value=f"Até <t:{int(data_fim.timestamp())}:F>"
+            )
+            embed.set_footer(text=f"ID do Desafio: {novo_desafio.id} | Use /submeter para participar!")
+
+            await canal_desafio.send(content=f"{role_mention}, novo desafio disponível!", embed=embed)
+            
+            await interaction.followup.send(f"✅ Desafio '{titulo}' (ID: {novo_desafio.id}) criado com sucesso e anunciado em {canal_desafio.mention}!")
+        
+        else:
+            await interaction.followup.send(f"⚠️ Desafio criado no DB (ID: {novo_desafio.id}), mas não encontrei o canal com ID {config['channel_id']}. Verifique o CHALLENGE_CONFIG.")
+
+    except Exception as e:
+        print(f"Erro ao anunciar desafio: {e}")
+        await interaction.followup.send(f"⚠️ Desafio criado no DB (ID: {novo_desafio.id}), mas falhei ao tentar anunciá-lo. Erro: {e}")
 
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -365,9 +400,18 @@ async def votar_jurado(interaction: discord.Interaction, id_submissao: int):
             await interaction.followup.send("⚠️ Você já votou nesta submissão como jurado.")
             return
 
-        submissao.pontos_jurados += PONTOS_POR_VOTO_JURADO
-        submissao.pontos_total += PONTOS_POR_VOTO_JURADO
-        await submissao.save()
+        submissoes_vencedoras = sorted(submissao, key=lambda s: s.pontos_total, reverse=True)
+
+        for sub in submissoes_vencedoras:
+            usuario = sub.usuario
+            
+            pontos_ganhos = sub.pontos_total 
+            
+            usuario.pontos_total += pontos_ganhos
+            usuario.pontos_mes += pontos_ganhos
+            usuario.pontos_semana += pontos_ganhos
+            
+            await usuario.save()
 
         await interaction.followup.send(f"✅ Voto de jurado computado! (+{PONTOS_POR_VOTO_JURADO} pontos para a submissão {submissao.id}).")
 
@@ -449,7 +493,7 @@ async def encerrar_votacao(interaction: discord.Interaction, id_desafio: int):
         justificativas_ia[sub.id] = justificativa 
         
     await interaction.edit_original_response(content="Análise da IA completa! Calculando rankings...")
-    # --- FIM DA LÓGICA DE IA ---
+    
 
 
     submissoes_vencedoras = sorted(submissoes, key=lambda s: s.pontos_total, reverse=True)
@@ -495,22 +539,63 @@ async def encerrar_votacao(interaction: discord.Interaction, id_desafio: int):
 
 @tree.command(
     name="ranking",
-    description="Mostra o ranking geral de pontos da comunidade.",
+    description="Mostra o ranking de pontos da comunidade.",
     guild=TEST_GUILD
 )
-async def ranking(interaction: discord.Interaction):
+@app_commands.describe(
+    periodo="O tipo de ranking que você quer ver (padrão: Semanal)."
+)
+@app_commands.choices(periodo=[
+    Choice(name='Semanal (Esta Semana)', value='semana'),
+    Choice(name='Mensal (Este Mês)', value='mes'),
+    Choice(name='Geral (Todos os Tempos)', value='geral'),
+])
+async def ranking(
+    interaction: discord.Interaction, 
+    periodo: Choice[str] = None 
+):
     await interaction.response.defer()
 
-    top_usuarios = await Usuario.all().order_by('-pontos_total').limit(10)
+    tipo_ranking = 'semana'
+    if periodo:
+        tipo_ranking = periodo.value
 
-    if not top_usuarios:
-        await interaction.followup.send("Ainda não há ninguém no ranking. Participe de um desafio!")
+    hoje = datetime.datetime.now() 
+    top_usuarios = []
+    titulo_ranking = ""
+    campo_pontos = "" 
+
+    if tipo_ranking == 'semana':
+        titulo_ranking = f"🏆 Ranking Semanal 🏆"
+        campo_pontos = 'pontos_semana'
+        
+    elif tipo_ranking == 'mes':
+        titulo_ranking = f"🏆 Ranking Mensal ({hoje.strftime('%B de %Y')}) 🏆"
+        campo_pontos = 'pontos_mes'
+
+    else: 
+        titulo_ranking = "🏆 Ranking Geral (Todos os Tempos) 🏆"
+        campo_pontos = 'pontos_total'
+        
+    top_usuarios = await Usuario.all().order_by(f'-{campo_pontos}').limit(10)
+
+
+    pontos_do_primeiro = 0
+    if top_usuarios:
+        pontos_do_primeiro = getattr(top_usuarios[0], campo_pontos) or 0 
+
+    if not top_usuarios or pontos_do_primeiro == 0:
+        embed = discord.Embed(
+            title=titulo_ranking,
+            description="👻 Parece que está tudo zerado por aqui.\nNinguém pontuou ainda neste período.",
+            color=discord.Color.light_grey()
+        )
+        await interaction.followup.send(embed=embed)
         return
 
-    
     embed = discord.Embed(
-        title="🏆 Ranking Geral da Comunidade 🏆",
-        description="Pontuação acumulada de todos os desafios.",
+        title=titulo_ranking,
+        description="Pontuação acumulada dos desafios.",
         color=discord.Color.purple()
     )
 
@@ -518,13 +603,10 @@ async def ranking(interaction: discord.Interaction):
     medalhas = ["🥇", "🥈", "🥉"]
 
     for i, usuario in enumerate(top_usuarios):
-        if usuario.pontos_total == 0: continue 
-
+        pontos = getattr(usuario, campo_pontos) or 0
+        
         prefixo = medalhas[i] if i < len(medalhas) else f"**{i+1}.**"
-        ranking_descricao += f"{prefixo} {usuario.username} **{usuario.pontos_total} pontos**\n"
-
-    if not ranking_descricao:
-         ranking_descricao = "Ninguém pontuou ainda."
+        ranking_descricao += f"{prefixo} {usuario.username} - **{pontos} pontos**\n"
 
     embed.add_field(name="Top 10 Desenvolvedores", value=ranking_descricao)
     await interaction.followup.send(embed=embed)
@@ -577,22 +659,59 @@ async def gerar_desafio_ia(
         await interaction.followup.send(f"❌ Erro ao salvar o desafio da IA no banco de dados: {e}")
         return
 
-    # 4. Anunciar o desafio
-    canal_desafios = client.get_channel(int(os.getenv("DISCORD_CHANNEL_ID"))) 
 
-    if canal_desafios:
-        embed = discord.Embed(
-            title=f"🚀 Novo Desafio (IA): {titulo} (Nível: {nivel.name})",
-            description=descricao,
-            color=discord.Color.blue()
-        )
-        embed.add_field(name="Prazo de Submissão", value=f"Até <t:{int(data_fim.timestamp())}:F>")
-        embed.set_footer(text=f"ID do Desafio: {novo_desafio.id} | Use /submeter para participar!")
+    CHALLENGE_CONFIG = {
+        "iniciante": {
+            "role_id": int(os.getenv("ROLE_ID_INICIANTE")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_INICIANTE"))
+        },
+        "junior": {
+            "role_id": int(os.getenv("ROLE_ID_JUNIOR")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_JUNIOR"))
+        },
+        "pleno": {
+            "role_id": int(os.getenv("ROLE_ID_PLENO")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_PLENO")),
+        },
+        "senior": {
+            "role_id": int(os.getenv("ROLE_ID_SENIOR")),
+            "channel_id": int(os.getenv("DISCORD_CHANNEL_SENIOR")),
+        }
+    }
 
-        await canal_desafios.send(content="@everyone Novo desafio gerado por IA!", embed=embed)
-        await interaction.followup.send(f"✅ Desafio da IA (ID: {novo_desafio.id}) criado com sucesso!")
-    else:
-        await interaction.followup.send(f"⚠️ Desafio criado no DB (ID: {novo_desafio.id}), mas não encontrei o canal de anúncios.")
+    nivel_key = nivel.value 
+    config = CHALLENGE_CONFIG.get(nivel_key)
+
+    if not config:
+        await interaction.followup.send(f"⚠️ Desafio criado no DB (ID: {novo_desafio.id}), mas NENHUM canal/role foi configurado no CHALLENGE_CONFIG para o nível '{nivel_key}'.")
+        return
+
+    try:
+        canal_desafio = client.get_channel(config["channel_id"])
+        role_mention = f"<@&{config['role_id']}>"
+        
+        if canal_desafio:
+            embed = discord.Embed(
+                title=f"🚀 Novo Desafio: {titulo} (Nível: {nivel.name})",
+                description=descricao,
+                color=discord.Color.blue()
+            )
+            embed.add_field(
+                name="Prazo de Submissão",
+                value=f"Até <t:{int(data_fim.timestamp())}:F>"
+            )
+            embed.set_footer(text=f"ID do Desafio: {novo_desafio.id} | Use /submeter para participar!")
+
+            await canal_desafio.send(content=f"{role_mention}, novo desafio disponível!", embed=embed)
+            
+            await interaction.followup.send(f"✅ Desafio '{titulo}' (ID: {novo_desafio.id}) criado com sucesso e anunciado em {canal_desafio.mention}!")
+        
+        else:
+            await interaction.followup.send(f"⚠️ Desafio criado no DB (ID: {novo_desafio.id}), mas não encontrei o canal com ID {config['channel_id']}. Verifique o CHALLENGE_CONFIG.")
+
+    except Exception as e:
+        print(f"Erro ao anunciar desafio: {e}")
+        await interaction.followup.send(f"⚠️ Desafio criado no DB (ID: {novo_desafio.id}), mas falhei ao tentar anunciá-lo. Erro: {e}")
 
 ## FIM DOS COMANDOS ##
 
