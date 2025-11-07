@@ -10,12 +10,15 @@ class Usuario(Model):
     discord_id = fields.BigIntField(pk=True)
     username = fields.CharField(max_length=100)
     pontos_total = fields.IntField(default=0)
+    pontos_semana = fields.IntField(default=0)
+    pontos_mes = fields.IntField(default=0)
 
     def __str__(self):
         return self.username
     
 class Desafio(Model):
     class Nivel(str, Enum):
+        INICIANTE = "iniciante"
         JUNIOR = "junior"
         PLENO = "pleno"
         SENIOR = "senior"
