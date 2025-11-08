@@ -537,7 +537,7 @@ async def encerrar_votacao(interaction: discord.Interaction, id_desafio: int):
     challenge_level = desafio.nivel.value 
     config = CHALLENGE_CONFIG.get(challenge_level) 
 
-    canal_anuncios = int(os.getenv("DISCORD_ANNOUNCEMENT_CHANNEL_ID"))
+    canal_anuncios = int(os.getenv("DISCORD_CHANNEL_WINNER_ANNOUNCEMENT_ID"))
     
     if config:
         canal_anuncios = client.get_channel(config["channel_id"])
